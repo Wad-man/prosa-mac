@@ -73,7 +73,7 @@ jobs:
             echo "No fork-native changes — nothing to check."; exit 0
           fi
           echo "Fork-native touched files:"; echo "$CHANGED"
-          WHITELIST='^(src-tauri/src/macos/|src-tauri/src/menu\.rs|src-tauri/src/watchdog\.rs|src/platform/macos/|src-tauri/\.cargo/|src-tauri/tauri\.macos\.conf\.json|\.github/workflows/ci-macos\.yml|\.github/workflows/release-macos\.yml|README\.md|README-mac\.md|Cargo\.lock|src-tauri/Cargo\.lock|package-lock\.json)'
+          WHITELIST='^(src-tauri/src/macos/|src-tauri/src/menu\.rs|src-tauri/src/watchdog\.rs|src/platform/macos/|src-tauri/\.cargo/|src-tauri/tauri\.macos\.conf\.json|\.github/workflows/ci-macos\.yml|\.github/workflows/release-macos\.yml|README\.md|README-mac\.md|\.github/release-notes-template\.md|Cargo\.lock|src-tauri/Cargo\.lock|package-lock\.json)'
           BAD=$(echo "$CHANGED" | grep -vE "$WHITELIST" || true)
           if [ -n "$BAD" ]; then
             echo "::error::Fork-native commits touched shared code — send it to Wad-man/prosa first (#121):"; echo "$BAD"; exit 1
