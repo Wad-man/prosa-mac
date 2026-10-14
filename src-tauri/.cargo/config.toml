@@ -1,0 +1,6 @@
+# prosa-mac fork marker (#121): compiles the macOS-only modules
+# (native menu, watchdog checker) that upstream keeps inert behind this
+# cfg. Upstream builds never set it — and a macOS build of upstream stops
+# at the compile_error! pointer to this repository.
+[build]
+rustflags = ["--cfg", "prosa_mac"]

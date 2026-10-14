@@ -1,0 +1,118 @@
+name: Release (macOS)
+
+# macOS releases of ProsaMD live in THIS repository (split from
+# Wad-man/prosa, #121). Tag push (v*) builds the signed universal bundle
+# and creates a DRAFT release here; the in-app updater of mac builds polls
+# this repo's releases/latest/download/latest.json (endpoint baked in via
+# tauri.macos.conf.json).
+#
+# Versioning (#121): <upstream-core-tag>-mac.N (first: v0.2.0-rc.7-mac.1)
+# — the plain unsuffixed numbers always belong to the upstream repo.
+#
+# Releases publish WITHOUT the prerelease flag on purpose: GitHub's
+# releases/latest skips prereleases, and the updater endpoint rides on it —
+# "beta" status lives in the release title/notes, not the flag.
+#
+# Same staging scheme as upstream's release.yml: the build job uploads
+# workflow artifacts, the release job downloads them, builds latest.json
+# (darwin platforms only) and calls `gh release create` exactly once.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  macos:
+    name: macOS release (universal)
+    if: github.repository == 'Wad-man/prosa-mac'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # universal-apple-darwin builds both slices, so install both targets
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-universal
+      - run: npm ci
+
+      - name: Build signed universal dmg
+        # app,dmg — not dmg alone: the macOS updater artifact (.app.tar.gz +
+        # .sig in bundle/macos/) is derived from the `app` bundle; with only
+        # `dmg` Tauri skips it and the staging step below fails (learned on
+        # the upstream side, 2026-10-12). signingIdentity "-" keeps the
+        # ad-hoc signature (no Apple account; the arm64 slice needs at least
+        # that to survive macOS). The version comes from the TAG via --config:
+        # the fork never edits the shared version files (tauri.conf.json /
+        # Cargo.toml / package.json) — upstream bumps those, and the mac
+        # suffix lives only in the fork's tags. The updater key is the SAME
+        # platform-independent secret as upstream's — installs must keep
+        # updating across the split (#121).
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          npx tauri build --target universal-apple-darwin --bundles app,dmg \
+            --config "{\"version\":\"$V\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}"
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      - name: Stage release files
+        run: |
+          set -euo pipefail
+          # dmg is the manual-install asset; the macOS UPDATER artifact is
+          # the .app.tar.gz (+ .sig) from bundle/macos/ — Tauri 2 updates
+          # from the tarball, not from the dmg.
+          mkdir -p stage/dmg stage/macos-updater
+          B=src-tauri/target/universal-apple-darwin/release/bundle
+          cp "$B"/dmg/*.dmg stage/dmg/
+          cp "$B"/macos/*.app.tar.gz "$B"/macos/*.app.tar.gz.sig stage/macos-updater/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: stage
+          if-no-files-found: error
+
+  release:
+    name: Create draft release
+    needs: [macos]
+    if: github.repository == 'Wad-man/prosa-mac'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          V="${TAG#v}"
+
+          node scripts/make-updater-json.mjs "$TAG" \
+            --macos dist/macos-updater \
+            --out dist/latest.json
+
+          sed "s/__VERSION__/${V}/g" .github/release-notes-template.md > release-notes.md
+
+          gh release create "$TAG" \
+            --draft \
+            --title "ProsaMD для macOS $TAG (бета)" \
+            --notes-file release-notes.md \
+            dist/dmg/*.dmg \
+            dist/macos-updater/* \
+            dist/latest.json

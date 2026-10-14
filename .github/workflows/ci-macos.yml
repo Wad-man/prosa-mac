@@ -1,0 +1,81 @@
+name: CI (macOS)
+
+# The macOS line of ProsaMD lives HERE (split from Wad-man/prosa, #121).
+# Every job is pinned to this repository — the upstream repo this fork
+# syncs from carries its own Windows/Linux CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos-universal:
+    name: macOS build (universal)
+    if: github.repository == 'Wad-man/prosa-mac'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # universal-apple-darwin builds both slices, so install both targets
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-universal
+      - run: npm ci
+      - name: Build ad-hoc-signed universal dmg
+        # ad-hoc signature ("-"): no Apple account needed, but the arm64
+        # slice is killed by macOS unless it carries at least this.
+        # tauri.macos.conf.json rides along automatically on macOS builds
+        # (version + this repo's updater endpoint), while .cargo/config.toml
+        # sets the prosa_mac cfg that compiles the mac-only modules.
+        run: npx tauri build --target universal-apple-darwin --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prosamd-macos-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  # Keep the fork honest about divergence: fork-native commits (NOT merge
+  # commits — those are upstream syncs carrying shared-code changes, which
+  # is exactly how the model works) may only touch the mac whitelist.
+  # Shared-code fixes go to Wad-man/prosa first (#121, "upstream first").
+  fork-whitelist:
+    name: Fork commits stay in mac paths
+    if: github.repository == 'Wad-man/prosa-mac'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check fork-native files against the whitelist
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Wad-man/prosa.git || true
+          git fetch upstream main --no-tags || true
+          if [ -n "${PR_BASE}" ]; then
+            BASE="${PR_BASE}"
+          elif git rev-parse upstream/main >/dev/null 2>&1; then
+            BASE=$(git merge-base HEAD upstream/main)
+          else
+            BASE=$(git rev-parse HEAD~1)
+          fi
+          # fork-native commits = everything except merge commits (syncs)
+          CHANGED=$(git log --no-merges --name-only --format= "$BASE"..HEAD | sed '/^$/d' | sort -u)
+          if [ -z "$CHANGED" ]; then
+            echo "No fork-native changes — nothing to check."; exit 0
+          fi
+          echo "Fork-native touched files:"; echo "$CHANGED"
+          WHITELIST='^(src-tauri/src/macos/|src-tauri/src/menu\.rs|src-tauri/src/watchdog\.rs|src/platform/macos/|src-tauri/\.cargo/|src-tauri/tauri\.macos\.conf\.json|\.github/workflows/ci-macos\.yml|\.github/workflows/release-macos\.yml|README\.md|README-mac\.md|Cargo\.lock|src-tauri/Cargo\.lock|package-lock\.json)'
+          BAD=$(echo "$CHANGED" | grep -vE "$WHITELIST" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Fork-native commits touched shared code — send it to Wad-man/prosa first (#121):"; echo "$BAD"; exit 1
+          fi
+          echo "All fork-native changes within the whitelist."
